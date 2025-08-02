@@ -56,13 +56,13 @@ jobs:
 
       - name: Run Black Check
         run: |
-          poetry run black --check atomic-mcp atomic-assembler
+          poetry run black --check atomic_mcp
         if: success()
 
       - name: Run Flake8
-        run: poetry run flake8 --extend-exclude=.venv atomic-mcp
+        run: poetry run flake8 --extend-exclude=.venv atomic_mcp
         if: success()
 
       - name: Run Tests
-        run: poetry run pytest --cov=atomic_mcp atomic-mcp
+        run: poetry run pytest --cov=atomic_mcp tests/
         if: success()
