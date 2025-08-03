@@ -5,7 +5,7 @@ import logging
 import os
 import signal
 import sys
-from typing import List, Optional
+from typing import List, Optional, Callable, Any, Dict, Awaitable
 
 from fastmcp import FastMCP
 from atomic_mcp.server.interfaces.tool import Tool
@@ -48,16 +48,55 @@ class MCPServer:
     Supports STDIO and HTTP transports only (SSE is deprecated).
     """
 
-    def __init__(self, name: str = "atomic-mcp-server", description: str = ""):
+    def __init__(
+        self, 
+        name: str = "atomic-mcp-server", 
+        description: str = "",
+        # Core FastMCP parameters
+        instructions: Optional[str] = None,
+        dependencies: Optional[List[str]] = None,
+        lifespan: Optional[Callable] = None,
+        # ServerSettings parameters  
+        log_level: Optional[str] = None,
+        debug: Optional[bool] = None,
+        # Route configuration
+        enable_health_check: bool = True,
+        health_check_path: str = "/health",
+        **fastmcp_kwargs
+    ):
         """
         Initialize the MCP Server.
 
         Args:
             name: Server name identifier
             description: Server description
+            instructions: Instructions for the FastMCP server
+            dependencies: List of dependencies for deployment
+            lifespan: Async context manager for startup/shutdown logic
+            log_level: Logging level for the server
+            debug: Enable debug mode
+            enable_health_check: Whether to enable the default health check route
+            health_check_path: Path for the health check endpoint
+            **fastmcp_kwargs: Additional keyword arguments passed to FastMCP constructor
         """
         self.name = name
         self.description = description
+        
+        # Store route configuration
+        self.enable_health_check = enable_health_check
+        self.health_check_path = health_check_path
+        
+        # Store FastMCP configuration for later use
+        self._fastmcp_config = {
+            "instructions": instructions,
+            "dependencies": dependencies,
+            "lifespan": lifespan,
+            "log_level": log_level,
+            "debug": debug,
+            **fastmcp_kwargs
+        }
+        # Remove None values to let FastMCP use its defaults
+        self._fastmcp_config = {k: v for k, v in self._fastmcp_config.items() if v is not None}
 
         # Initialize services
         self.tool_service = ToolService()
@@ -65,6 +104,9 @@ class MCPServer:
 
         # FastMCP instance (created when server runs)
         self._mcp_server: Optional[FastMCP] = None
+        
+        # Custom route handlers storage
+        self._custom_routes: List[Dict[str, Any]] = []
 
         # Shutdown flag for graceful termination
         self._shutdown_requested = False
@@ -123,16 +165,96 @@ class MCPServer:
         self.resource_service.register_resources(resources)
         logger.debug(f"Registered {len(resources)} resources")
 
+    def add_route(
+        self, 
+        path: str, 
+        handler: Callable, 
+        methods: List[str] = ["GET"], 
+        name: Optional[str] = None,
+        include_in_schema: bool = True
+    ) -> None:
+        """
+        Add a custom HTTP route to the server.
+
+        Args:
+            path: URL path for the route (e.g., "/custom/endpoint")
+            handler: Async function that handles the route (takes Request, returns Response)
+            methods: List of HTTP methods to support
+            name: Optional name for the route
+            include_in_schema: Whether to include in OpenAPI schema
+        """
+        route_config = {
+            "path": path,
+            "handler": handler,
+            "methods": methods,
+            "name": name,
+            "include_in_schema": include_in_schema
+        }
+        self._custom_routes.append(route_config)
+        logger.debug(f"Added custom route: {methods} {path}")
+
+    def _create_health_check_handler(self):
+        """Create the default health check route handler."""
+        async def health_check(request):
+            """Health check endpoint that returns server status."""
+            try:
+                # Import here to avoid issues if starlette isn't available in STDIO mode
+                from starlette.responses import JSONResponse
+                
+                health_data = {
+                    "status": "healthy",
+                    "server": self.name,
+                    "tools": len(self.tool_service._tools),
+                    "resources": len(self.resource_service._uri_patterns),
+                    "version": "0.1.2"  # Could be made configurable
+                }
+                return JSONResponse(health_data)
+            except ImportError:
+                # Fallback if starlette isn't available
+                logger.warning("Starlette not available for health check JSON response")
+                return f"OK - {self.name}"
+        
+        return health_check
+
     def _setup_mcp_server(self) -> FastMCP:
         """Setup and configure the underlying FastMCP server."""
         if self._mcp_server is None:
-            self._mcp_server = FastMCP(self.name)
+            # Create FastMCP instance with stored configuration
+            self._mcp_server = FastMCP(self.name, **self._fastmcp_config)
 
             # Register all tools and resources with FastMCP
             self.tool_service.register_mcp_handlers(self._mcp_server)
             self.resource_service.register_mcp_handlers(self._mcp_server)
+            
+            # Register custom routes
+            self._setup_custom_routes()
 
         return self._mcp_server
+
+    def _setup_custom_routes(self) -> None:
+        """Setup custom HTTP routes including health check."""
+        if self._mcp_server is None:
+            return
+            
+        # Add default health check route if enabled
+        if self.enable_health_check:
+            health_handler = self._create_health_check_handler()
+            self._mcp_server.custom_route(
+                path=self.health_check_path,
+                methods=["GET"],
+                name="health_check"
+            )(health_handler)
+            logger.debug(f"Added health check route: GET {self.health_check_path}")
+        
+        # Add user-defined custom routes
+        for route_config in self._custom_routes:
+            self._mcp_server.custom_route(
+                path=route_config["path"],
+                methods=route_config["methods"],
+                name=route_config["name"],
+                include_in_schema=route_config["include_in_schema"]
+            )(route_config["handler"])
+            logger.debug(f"Added custom route: {route_config['methods']} {route_config['path']}")
 
     def _detect_transport(self) -> str:
         """
