@@ -3,7 +3,6 @@
 from typing import Dict, List, Any
 from fastmcp import FastMCP
 from atomic_mcp.server.interfaces.tool import Tool, ToolResponse, ToolContent
-from pydantic import Field
 
 
 class ToolService:
@@ -30,7 +29,7 @@ class ToolService:
     def _get_type_hint(self, field_info: Dict[str, Any]) -> str:
         """Get the appropriate type hint for a field based on its schema info."""
         field_type = field_info.get("type")
-        
+
         if field_type == "integer":
             return "int"
         elif field_type == "number":
@@ -48,7 +47,9 @@ class ToolService:
             # Default to str for strings and unknown types
             return "str"
 
-    async def execute_tool(self, tool_name: str, input_data: Dict[str, Any]) -> ToolResponse:
+    async def execute_tool(
+        self, tool_name: str, input_data: Dict[str, Any]
+    ) -> ToolResponse:
         """Execute a tool by name with given arguments.
 
         Args:
@@ -124,12 +125,15 @@ class ToolService:
                 # This ensures FastMCP gets the complete schema including nested objects
                 async def handler(input_data: tool_instance.input_model):
                     f'"""{tool_instance.description}"""'
-                    result = await self.execute_tool(tool_instance.name, input_data.model_dump())
+                    result = await self.execute_tool(
+                        tool_instance.name, input_data.model_dump()
+                    )
                     return self._serialize_response(result)
+
                 return handler
 
             # Create the handler
             handler = create_handler(tool)
-            
+
             # Register with FastMCP - it should auto-detect the schema from the type annotation
             mcp.tool(name=tool.name, description=tool.description)(handler)

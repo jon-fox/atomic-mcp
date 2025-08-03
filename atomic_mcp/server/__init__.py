@@ -7,7 +7,7 @@ from .services import ToolService, ResourceService
 __all__ = [
     "MCPServer",
     "Tool",
-    "Resource", 
+    "Resource",
     "ToolResponse",
     "ResourceResponse",
     "BaseToolInput",

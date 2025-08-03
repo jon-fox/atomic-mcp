@@ -5,7 +5,7 @@ from .resource import Resource, ResourceResponse, ResourceContent
 
 __all__ = [
     "Tool",
-    "ToolResponse", 
+    "ToolResponse",
     "ToolContent",
     "BaseToolInput",
     "Resource",
