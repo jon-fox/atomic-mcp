@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import signal
 import sys
 from typing import List, Optional
 
@@ -13,6 +14,28 @@ from atomic_mcp.server.services.tool import ToolService
 from atomic_mcp.server.services.resource import ResourceService
 
 
+# Configure logging for subprocess environment
+def _configure_stdio_logging():
+    """Configure logging for STDIO transport to avoid polluting MCP communication."""
+    # In STDIO mode, stdout/stderr are used for MCP protocol
+    # Log to file or disable logging to avoid interference
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        # Running as subprocess - configure file logging or disable
+        log_file = os.getenv("MCP_LOG_FILE")
+        if log_file:
+            logging.basicConfig(
+                filename=log_file,
+                level=logging.INFO,
+                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+        else:
+            # Disable logging to avoid interfering with MCP protocol
+            logging.getLogger().setLevel(logging.CRITICAL)
+    else:
+        # Normal console logging for HTTP mode
+        logging.basicConfig(level=logging.INFO)
+
+_configure_stdio_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +64,22 @@ class MCPServer:
         
         # FastMCP instance (created when server runs)
         self._mcp_server: Optional[FastMCP] = None
+        
+        # Shutdown flag for graceful termination
+        self._shutdown_requested = False
+        
+        # Setup signal handlers for graceful shutdown
+        self._setup_signal_handlers()
+        
+    def _setup_signal_handlers(self) -> None:
+        """Setup signal handlers for graceful shutdown."""
+        def signal_handler(signum, frame):
+            logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+            self._shutdown_requested = True
+            
+        # Handle SIGINT (Ctrl+C) and SIGTERM 
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
         
     def add_tool(self, tool: Tool) -> None:
         """
@@ -130,8 +169,8 @@ class MCPServer:
             logger.info(f"Starting {self.name} with STDIO transport")
             await mcp_server.run_async(transport="stdio")
         elif transport == "http":
-            logger.info(f"Starting {self.name} with HTTP transport on {host}:{port}")
-            await mcp_server.run_async(transport="http", http_port=port, host=host)
+            logger.info(f"Starting {self.name} with HTTP transport on {host}:{port}/mcp")
+            await mcp_server.run_async(transport="http", http_port=port, host=host, path="/mcp")
         else:
             raise ValueError(f"Unknown transport: {transport}. Only 'stdio' and 'http' are supported.")
             

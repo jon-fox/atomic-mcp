@@ -2,7 +2,7 @@
 
 from typing import Dict, List
 import re
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 from atomic_mcp.server.interfaces.resource import Resource, ResourceResponse
 
 
