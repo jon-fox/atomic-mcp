@@ -62,6 +62,8 @@ class MCPServer:
         # Route configuration
         enable_health_check: bool = True,
         health_check_path: str = "/health",
+        version: str = "0.1.0",
+        stateless_http: bool = False,
         **fastmcp_kwargs
     ):
         """
@@ -93,6 +95,8 @@ class MCPServer:
             "lifespan": lifespan,
             "log_level": log_level,
             "debug": debug,
+            "version": version,
+            "stateless_http": stateless_http,
             **fastmcp_kwargs
         }
         # Remove None values to let FastMCP use its defaults
@@ -298,7 +302,7 @@ class MCPServer:
                 f"Starting {self.name} with HTTP transport on {host}:{port}/mcp"
             )
             await mcp_server.run_async(
-                transport="http", http_port=port, host=host, path="/mcp"
+                transport="http", port=port, host=host, path="/mcp"
             )
         else:
             raise ValueError(
@@ -306,7 +310,7 @@ class MCPServer:
             )
 
     def run(
-        self, transport: str = "auto", host: str = "localhost", port: int = 8000
+        self, transport: str = "auto", host: str = "localhost", port: int = 8000, path: str = "/mcp"
     ) -> None:
         """
         Run the server (blocking call).
@@ -315,6 +319,7 @@ class MCPServer:
             transport: Transport method ("auto", "stdio", or "http")
             host: Host for HTTP transport
             port: Port for HTTP transport
+            path: Path for HTTP transport (ignored, kept for compatibility)
         """
         try:
             asyncio.run(self.run_async(transport, host, port))
@@ -345,6 +350,23 @@ class MCPServer:
     def get_registered_resources(self) -> List[str]:
         """Get list of registered resource URI patterns."""
         return list(self.resource_service._uri_patterns.keys())
+
+    def tool(self, name: str, description: str = ""):
+        """
+        Decorator for registering tool handlers with FastMCP.
+        
+        Args:
+            name: Tool name
+            description: Tool description
+            
+        Returns:
+            Decorator function that registers the handler with FastMCP
+        """
+        if self._mcp_server is None:
+            self._setup_mcp_server()
+        # At this point _mcp_server is guaranteed to be a FastMCP instance
+        assert self._mcp_server is not None
+        return self._mcp_server.tool(name=name, description=description)
 
     def __repr__(self) -> str:
         tools_count = len(self.tool_service._tools)
