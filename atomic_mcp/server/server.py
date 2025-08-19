@@ -64,6 +64,13 @@ class MCPServer:
         health_check_path: str = "/health",
         version: str = "0.1.0",
         stateless_http: bool = False,
+        # JWT Authentication options
+        enable_jwt_validation: bool = False,
+        jwt_public_key: Optional[str] = None,
+        jwt_issuer: Optional[str] = None,
+        jwt_audience: Optional[str] = None,
+        jwt_algorithms: Optional[List[str]] = None,
+        custom_auth_provider: Optional[Any] = None,
         **fastmcp_kwargs
     ):
         """
@@ -79,6 +86,12 @@ class MCPServer:
             debug: Enable debug mode
             enable_health_check: Whether to enable the default health check route
             health_check_path: Path for the health check endpoint
+            enable_jwt_validation: Enable JWT token validation for HTTP transport
+            jwt_public_key: Public key for JWT verification (PEM format)
+            jwt_issuer: Expected JWT issuer claim
+            jwt_audience: Expected JWT audience claim
+            jwt_algorithms: List of allowed JWT algorithms (default: ["RS256"])
+            custom_auth_provider: Custom authentication provider instance (overrides JWT settings)
             **fastmcp_kwargs: Additional keyword arguments passed to FastMCP constructor
         """
         self.name = name
@@ -87,6 +100,14 @@ class MCPServer:
         # Store route configuration
         self.enable_health_check = enable_health_check
         self.health_check_path = health_check_path
+        
+        # Store JWT configuration
+        self.enable_jwt_validation = enable_jwt_validation
+        self.jwt_public_key = jwt_public_key
+        self.jwt_issuer = jwt_issuer
+        self.jwt_audience = jwt_audience
+        self.jwt_algorithms = jwt_algorithms or ["RS256"]
+        self.custom_auth_provider = custom_auth_provider
         
         # Store FastMCP configuration for later use
         self._fastmcp_config = {
@@ -203,7 +224,7 @@ class MCPServer:
             """Health check endpoint that returns server status."""
             try:
                 # Import here to avoid issues if starlette isn't available in STDIO mode
-                from starlette.responses import JSONResponse
+                from starlette.responses import JSONResponse, Response
                 
                 health_data = {
                     "status": "healthy",
@@ -216,15 +237,82 @@ class MCPServer:
             except ImportError:
                 # Fallback if starlette isn't available
                 logger.warning("Starlette not available for health check JSON response")
-                return f"OK - {self.name}"
+                from starlette.responses import Response
+                return Response(f"OK - {self.name}")
         
         return health_check
+
+    def _create_jwt_auth_provider(self):
+        """Create JWT authentication provider for FastMCP."""
+        if not self.jwt_public_key:
+            raise ValueError("JWT public key is required when JWT validation is enabled")
+            
+        try:
+            # Try the new JWTVerifier first, fall back to deprecated BearerAuthProvider
+            try:
+                from fastmcp.server.auth.providers.jwt import JWTVerifier
+                
+                auth_provider = JWTVerifier(
+                    public_key=self.jwt_public_key,
+                    issuer=self.jwt_issuer,
+                    audience=self.jwt_audience
+                )
+                logger.info("JWT authentication provider configured (JWTVerifier)")
+                
+            except ImportError:
+                # Fall back to deprecated BearerAuthProvider
+                from fastmcp.server.auth import BearerAuthProvider
+                from cryptography.hazmat.primitives import serialization
+                
+                # Parse the public key
+                if self.jwt_public_key.startswith('-----BEGIN'):
+                    # PEM format
+                    public_key = serialization.load_pem_public_key(
+                        self.jwt_public_key.encode('utf-8')
+                    )
+                else:
+                    # Assume it's a base64 encoded key
+                    import base64
+                    key_data = base64.b64decode(self.jwt_public_key)
+                    public_key = serialization.load_der_public_key(key_data)
+                
+                auth_provider = BearerAuthProvider(
+                    public_key=public_key,
+                    issuer=self.jwt_issuer,
+                    audience=self.jwt_audience
+                )
+                logger.warning("Using deprecated BearerAuthProvider - consider updating FastMCP")
+                logger.info("JWT authentication provider configured (BearerAuthProvider)")
+            
+            return auth_provider
+            
+        except ImportError as e:
+            logger.error(f"FastMCP auth dependencies not available: {e}")
+            logger.error("Install with: pip install 'fastmcp[auth]'")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to setup JWT authentication: {e}")
+            raise
 
     def _setup_mcp_server(self) -> FastMCP:
         """Setup and configure the underlying FastMCP server."""
         if self._mcp_server is None:
+            # Setup authentication if enabled
+            auth_provider = None
+            if self.custom_auth_provider:
+                # Use custom auth provider if provided
+                auth_provider = self.custom_auth_provider
+                logger.info("Using custom authentication provider")
+            elif self.enable_jwt_validation and self.jwt_public_key:
+                # Use built-in JWT validation
+                auth_provider = self._create_jwt_auth_provider()
+            
             # Create FastMCP instance with stored configuration
-            self._mcp_server = FastMCP(self.name, **self._fastmcp_config)
+            config = self._fastmcp_config.copy()
+            if auth_provider:
+                config["auth"] = auth_provider
+                
+            self._mcp_server = FastMCP(self.name, **config)
 
             # Register all tools and resources with FastMCP
             self.tool_service.register_mcp_handlers(self._mcp_server)
@@ -310,7 +398,7 @@ class MCPServer:
             )
 
     def run(
-        self, transport: str = "auto", host: str = "localhost", port: int = 8000, path: str = "/mcp"
+        self, transport: str = "auto", host: str = "localhost", port: int = 8000
     ) -> None:
         """
         Run the server (blocking call).
@@ -319,7 +407,6 @@ class MCPServer:
             transport: Transport method ("auto", "stdio", or "http")
             host: Host for HTTP transport
             port: Port for HTTP transport
-            path: Path for HTTP transport (ignored, kept for compatibility)
         """
         try:
             asyncio.run(self.run_async(transport, host, port))
