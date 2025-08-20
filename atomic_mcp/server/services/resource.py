@@ -4,14 +4,16 @@ from typing import Dict, List
 import re
 from fastmcp import FastMCP
 from atomic_mcp.server.interfaces.resource import Resource, ResourceResponse
+from atomic_mcp.server.interfaces.middleware import MiddlewareChain
 
 
 class ResourceService:
     """Service for managing and executing resources."""
 
-    def __init__(self):
+    def __init__(self, middleware_chain: MiddlewareChain = None):
         self._resources: Dict[str, Resource] = {}
         self._uri_patterns: Dict[str, Resource] = {}
+        self._middleware_chain = middleware_chain or MiddlewareChain()
 
     def register_resource(self, resource: Resource) -> None:
         """Register a new resource."""
@@ -76,7 +78,12 @@ class ResourceService:
             # For static resources with no parameters
             async def static_handler() -> ResourceResponse:
                 """Handle static resource request."""
-                return await resource.read()
+                async def _execute():
+                    return await resource.read()
+                
+                return await self._middleware_chain.execute_resource_middleware(
+                    resource, uri_pattern, {}, _execute
+                )
 
             # Set metadata for the handler
             static_handler.__name__ = resource.name
@@ -86,12 +93,25 @@ class ResourceService:
             # For resources with parameters
             # Define a dynamic function with named parameters matching URI placeholders
             params_str = ", ".join(uri_params)
+            params_dict = "{" + ", ".join([f'"{param}": {param}' for param in uri_params]) + "}"
+            
             func_def = f"async def param_handler({params_str}) -> ResourceResponse:\n"
             func_def += f'    """{resource.description}"""\n'
-            func_def += f"    return await resource.read({params_str})"
+            func_def += f"    params_dict = {params_dict}\n"
+            func_def += f"    async def _execute():\n"
+            func_def += f"        return await resource.read({params_str})\n"
+            func_def += f"    \n"
+            func_def += f"    return await middleware_chain.execute_resource_middleware(\n"
+            func_def += f"        resource, uri_pattern, params_dict, _execute\n"
+            func_def += f"    )"
 
             # Create namespace for execution
-            namespace = {"resource": resource, "ResourceResponse": ResourceResponse}
+            namespace = {
+                "resource": resource, 
+                "ResourceResponse": ResourceResponse,
+                "middleware_chain": self._middleware_chain,
+                "uri_pattern": uri_pattern
+            }
             exec(func_def, namespace)
 
             # Get the handler and set its name

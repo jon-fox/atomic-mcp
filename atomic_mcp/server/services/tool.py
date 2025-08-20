@@ -3,13 +3,15 @@
 from typing import Dict, List, Any
 from fastmcp import FastMCP
 from atomic_mcp.server.interfaces.tool import Tool, ToolResponse, ToolContent
+from atomic_mcp.server.interfaces.middleware import MiddlewareChain
 
 
 class ToolService:
     """Service for managing and executing tools."""
 
-    def __init__(self):
+    def __init__(self, middleware_chain: MiddlewareChain = None):
         self._tools: Dict[str, Tool] = {}
+        self._middleware_chain = middleware_chain or MiddlewareChain()
 
     def register_tool(self, tool: Tool) -> None:
         """Register a new tool."""
@@ -69,8 +71,13 @@ class ToolService:
         # Use model_validate to handle complex nested objects properly
         input_model = tool.input_model.model_validate(input_data)
 
-        # Execute the tool with validated input
-        return await tool.execute(input_model)
+        # Execute the tool with middleware chain
+        async def _execute():
+            return await tool.execute(input_model)
+        
+        return await self._middleware_chain.execute_tool_middleware(
+            tool, input_model, _execute
+        )
 
     def _process_tool_content(self, content: ToolContent) -> Any:
         """Process a ToolContent object based on its type.
@@ -123,13 +130,15 @@ class ToolService:
             def create_handler(tool_instance):
                 # Use the actual Pydantic model as the function parameter
                 # This ensures FastMCP gets the complete schema including nested objects
-                async def handler(input_data: tool_instance.input_model):
+                async def handler(input_data):
                     f'"""{tool_instance.description}"""'
                     result = await self.execute_tool(
                         tool_instance.name, input_data.model_dump()
                     )
                     return self._serialize_response(result)
 
+                # Set proper type annotation for FastMCP schema detection
+                handler.__annotations__ = {"input_data": tool_instance.input_model, "return": Any}
                 return handler
 
             # Create the handler

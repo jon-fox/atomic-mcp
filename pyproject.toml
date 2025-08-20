@@ -1,6 +1,6 @@
 [project]
 name = "atomic-mcp"
-version = "0.1.4"
+version = "0.1.5"
 description = "A framework for building MCP Servers using Atomic Agents and FastMCP"
 authors = [
     {name = "jon fox",email = "jon@foxsolutions.dev"}

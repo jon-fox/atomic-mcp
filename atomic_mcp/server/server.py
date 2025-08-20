@@ -5,11 +5,12 @@ import logging
 import os
 import signal
 import sys
-from typing import List, Optional, Callable, Any, Dict, Awaitable
+from typing import List, Optional, Callable, Any, Dict, Awaitable, Union
 
 from fastmcp import FastMCP
 from atomic_mcp.server.interfaces.tool import Tool
 from atomic_mcp.server.interfaces.resource import Resource
+from atomic_mcp.server.interfaces.middleware import MiddlewareChain, ToolMiddleware, ResourceMiddleware
 from atomic_mcp.server.services.tool import ToolService
 from atomic_mcp.server.services.resource import ResourceService
 
@@ -123,9 +124,12 @@ class MCPServer:
         # Remove None values to let FastMCP use its defaults
         self._fastmcp_config = {k: v for k, v in self._fastmcp_config.items() if v is not None}
 
-        # Initialize services
-        self.tool_service = ToolService()
-        self.resource_service = ResourceService()
+        # Initialize middleware chain
+        self.middleware_chain = MiddlewareChain()
+        
+        # Initialize services with middleware support
+        self.tool_service = ToolService(self.middleware_chain)
+        self.resource_service = ResourceService(self.middleware_chain)
 
         # FastMCP instance (created when server runs)
         self._mcp_server: Optional[FastMCP] = None
@@ -189,6 +193,68 @@ class MCPServer:
         """
         self.resource_service.register_resources(resources)
         logger.debug(f"Registered {len(resources)} resources")
+
+    def add_middleware(self, middleware: Union[ToolMiddleware, ResourceMiddleware]) -> None:
+        """
+        Add middleware to the server.
+
+        Args:
+            middleware: Middleware instance that implements ToolMiddleware or ResourceMiddleware
+        """
+        if isinstance(middleware, ToolMiddleware):
+            self.middleware_chain.add_tool_middleware(middleware)
+            logger.debug(f"Registered tool middleware: {middleware.name}")
+        
+        if isinstance(middleware, ResourceMiddleware):
+            self.middleware_chain.add_resource_middleware(middleware)
+            logger.debug(f"Registered resource middleware: {middleware.name}")
+
+    def add_middlewares(self, middlewares: List[Union[ToolMiddleware, ResourceMiddleware]]) -> None:
+        """
+        Add multiple middleware instances to the server.
+
+        Args:
+            middlewares: List of middleware instances
+        """
+        for middleware in middlewares:
+            self.add_middleware(middleware)
+        logger.debug(f"Registered {len(middlewares)} middleware instances")
+
+    def enable_logging_middleware(
+        self, 
+        log_level: str = "INFO",
+        log_inputs: bool = True,
+        log_outputs: bool = False,
+        log_timing: bool = True,
+        structured_logging: bool = True,
+        simple: bool = False
+    ) -> None:
+        """
+        Enable logging middleware with convenient defaults.
+
+        Args:
+            log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
+            log_inputs: Whether to log input parameters
+            log_outputs: Whether to log output results  
+            log_timing: Whether to log execution timing
+            structured_logging: Whether to use structured (JSON) logging
+            simple: Use simple logging middleware instead of full featured one
+        """
+        if simple:
+            from atomic_mcp.server.middleware.logging import SimpleLoggingMiddleware
+            middleware = SimpleLoggingMiddleware()
+        else:
+            from atomic_mcp.server.middleware.logging import LoggingMiddleware
+            middleware = LoggingMiddleware(
+                log_level=log_level,
+                log_inputs=log_inputs,
+                log_outputs=log_outputs,
+                log_timing=log_timing,
+                structured_logging=structured_logging
+            )
+        
+        self.add_middleware(middleware)
+        logger.info(f"Enabled {'simple' if simple else 'full'} logging middleware")
 
     def add_route(
         self, 
